@@ -1234,6 +1234,9 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 		hcluster.Status.Configuration = hcp.Status.Configuration
 	}
 
+	// Compute ClusterDeployment-compatible conditions for external consumers
+	hcluster.Status.ClusterDeploymentConditions = computeClusterDeploymentConditions(hcluster)
+
 	// Persist status updates
 	if err := r.Client.Status().Update(ctx, hcluster); err != nil {
 		if apierrors.IsConflict(err) {
@@ -5171,4 +5174,201 @@ func computeGCPPSCCondition(gcpPSCList hyperv1.GCPPrivateServiceConnectList, con
 		Reason:  hyperv1.GCPSuccessReason,
 		Message: hyperv1.AllIsWellMessage,
 	}
+}
+
+// computeClusterDeploymentConditions generates Hive ClusterDeployment-compatible
+// conditions based on the current HostedCluster state
+func computeClusterDeploymentConditions(hcluster *hyperv1.HostedCluster) []hyperv1.ClusterDeploymentCondition {
+	now := metav1.Now()
+	conditions := []hyperv1.ClusterDeploymentCondition{}
+
+	// Provisioned Condition
+	// Based on: infrastructure ready, control plane endpoint available, basic resources created
+	provisionedCondition := computeProvisionedCondition(hcluster, now)
+	conditions = append(conditions, provisionedCondition)
+
+	// Ready Condition
+	// Based on: Available condition, version progressing, all critical components ready
+	readyCondition := computeReadyCondition(hcluster, now)
+	conditions = append(conditions, readyCondition)
+
+	// DNSReady Condition
+	// Based on: existing DNS-related conditions and control plane endpoint
+	dnsReadyCondition := computeDNSReadyCondition(hcluster, now)
+	conditions = append(conditions, dnsReadyCondition)
+
+	// Reachable Condition
+	// Based on: control plane availability and API server reachability
+	reachableCondition := computeReachableCondition(hcluster, now)
+	conditions = append(conditions, reachableCondition)
+
+	return conditions
+}
+
+// computeProvisionedCondition determines if the cluster is provisioned
+func computeProvisionedCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hyperv1.ClusterDeploymentCondition {
+	// Logic: Check if basic infrastructure exists
+	// - ControlPlaneEndpoint is set
+	// - IgnitionEndpoint is set
+	// - KubeConfig secret reference exists
+
+	condition := hyperv1.ClusterDeploymentCondition{
+		Type:          hyperv1.ClusterProvisionedType,
+		LastProbeTime: probeTime,
+	}
+
+	if hcluster.Status.ControlPlaneEndpoint.Host != "" &&
+		hcluster.Status.KubeConfig != nil {
+		// Find existing transition time if status hasn't changed
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterProvisionedType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionTrue {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionTrue
+		condition.Reason = "ClusterProvisioned"
+		condition.Message = "Cluster has been provisioned successfully"
+	} else {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterProvisionedType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionFalse {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionFalse
+		condition.Reason = "Provisioning"
+		condition.Message = "Cluster is being provisioned"
+	}
+
+	return condition
+}
+
+// computeReadyCondition determines if the cluster is ready
+func computeReadyCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hyperv1.ClusterDeploymentCondition {
+	// Logic: Map from HostedCluster "Available" condition
+	availableCondition := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.HostedClusterAvailable))
+
+	condition := hyperv1.ClusterDeploymentCondition{
+		Type:          hyperv1.ClusterReadyType,
+		LastProbeTime: probeTime,
+	}
+
+	if availableCondition != nil && availableCondition.Status == metav1.ConditionTrue {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterReadyType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionTrue {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionTrue
+		condition.Reason = "ClusterReady"
+		condition.Message = "Cluster is ready and available"
+	} else {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterReadyType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionFalse {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionFalse
+		condition.Reason = "NotReady"
+		if availableCondition != nil && availableCondition.Message != "" {
+			condition.Message = availableCondition.Message
+		} else {
+			condition.Message = "Cluster is not yet ready"
+		}
+	}
+
+	return condition
+}
+
+// computeDNSReadyCondition determines DNS readiness
+func computeDNSReadyCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hyperv1.ClusterDeploymentCondition {
+	// Logic: Check control plane endpoint is accessible with valid DNS
+	// Note: Positive polarity - True means DNS IS ready (opposite of Hive's DNSNotReady)
+
+	condition := hyperv1.ClusterDeploymentCondition{
+		Type:          hyperv1.ClusterDNSReadyType,
+		LastProbeTime: probeTime,
+	}
+
+	// Check if control plane endpoint is set and valid
+	if hcluster.Status.ControlPlaneEndpoint.Host != "" {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterDNSReadyType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionTrue {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionTrue
+		condition.Reason = "DNSReady"
+		condition.Message = "DNS is properly configured"
+	} else {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterDNSReadyType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionFalse {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionFalse
+		condition.Reason = "DNSNotReady"
+		condition.Message = "DNS configuration pending"
+	}
+
+	return condition
+}
+
+// computeReachableCondition determines cluster API reachability
+func computeReachableCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hyperv1.ClusterDeploymentCondition {
+	// Logic: Based on Available condition and control plane health
+	availableCondition := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.HostedClusterAvailable))
+
+	condition := hyperv1.ClusterDeploymentCondition{
+		Type:          hyperv1.ClusterReachableType,
+		LastProbeTime: probeTime,
+	}
+
+	// If Available is True, cluster is reachable
+	if availableCondition != nil && availableCondition.Status == metav1.ConditionTrue {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterReachableType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionTrue {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionTrue
+		condition.Reason = "ClusterReachable"
+		condition.Message = "Cluster API is reachable"
+	} else {
+		existingCondition := findClusterDeploymentCondition(hcluster.Status.ClusterDeploymentConditions, hyperv1.ClusterReachableType)
+		if existingCondition != nil && existingCondition.Status == corev1.ConditionFalse {
+			condition.LastTransitionTime = existingCondition.LastTransitionTime
+		} else {
+			condition.LastTransitionTime = probeTime
+		}
+
+		condition.Status = corev1.ConditionFalse
+		condition.Reason = "ClusterUnreachable"
+		condition.Message = "Cluster API is not reachable"
+	}
+
+	return condition
+}
+
+// findClusterDeploymentCondition finds a condition by type
+func findClusterDeploymentCondition(conditions []hyperv1.ClusterDeploymentCondition, conditionType hyperv1.ClusterDeploymentConditionType) *hyperv1.ClusterDeploymentCondition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
 }

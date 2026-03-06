@@ -5923,3 +5923,833 @@ func TestComputeGCPPSCCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestComputeClusterDeploymentConditions(t *testing.T) {
+	testCases := []struct {
+		name                       string
+		hcluster                   *hyperv1.HostedCluster
+		expectedConditionsCount    int
+		expectedProvisionedStatus  corev1.ConditionStatus
+		expectedReadyStatus        corev1.ConditionStatus
+		expectedDNSReadyStatus     corev1.ConditionStatus
+		expectedReachableStatus    corev1.ConditionStatus
+	}{
+		{
+			name: "Fully available cluster",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:   4,
+			expectedProvisionedStatus: corev1.ConditionTrue,
+			expectedReadyStatus:       corev1.ConditionTrue,
+			expectedDNSReadyStatus:    corev1.ConditionTrue,
+			expectedReachableStatus:   corev1.ConditionTrue,
+		},
+		{
+			name: "Cluster being provisioned - no endpoint yet",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+				},
+			},
+			expectedConditionsCount:   4,
+			expectedProvisionedStatus: corev1.ConditionFalse,
+			expectedReadyStatus:       corev1.ConditionFalse,
+			expectedDNSReadyStatus:    corev1.ConditionFalse,
+			expectedReachableStatus:   corev1.ConditionFalse,
+		},
+		{
+			name: "Cluster provisioned but not yet available",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:   4,
+			expectedProvisionedStatus: corev1.ConditionTrue,
+			expectedReadyStatus:       corev1.ConditionFalse,
+			expectedDNSReadyStatus:    corev1.ConditionTrue,
+			expectedReachableStatus:   corev1.ConditionFalse,
+		},
+		{
+			name: "Cluster with no Available condition",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:   4,
+			expectedProvisionedStatus: corev1.ConditionTrue,
+			expectedReadyStatus:       corev1.ConditionFalse,
+			expectedDNSReadyStatus:    corev1.ConditionTrue,
+			expectedReachableStatus:   corev1.ConditionFalse,
+		},
+		{
+			name: "Cluster with endpoint but no kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: nil,
+				},
+			},
+			expectedConditionsCount:   4,
+			expectedProvisionedStatus: corev1.ConditionFalse,
+			expectedReadyStatus:       corev1.ConditionTrue,
+			expectedDNSReadyStatus:    corev1.ConditionTrue,
+			expectedReachableStatus:   corev1.ConditionTrue,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			conditions := computeClusterDeploymentConditions(tc.hcluster)
+
+			// Verify we got the expected number of conditions
+			g.Expect(conditions).To(HaveLen(tc.expectedConditionsCount))
+
+			// Verify each condition type exists and has correct status
+			var provisionedCond, readyCond, dnsReadyCond, reachableCond *hyperv1.ClusterDeploymentCondition
+			for i := range conditions {
+				switch conditions[i].Type {
+				case hyperv1.ClusterProvisionedType:
+					provisionedCond = &conditions[i]
+				case hyperv1.ClusterReadyType:
+					readyCond = &conditions[i]
+				case hyperv1.ClusterDNSReadyType:
+					dnsReadyCond = &conditions[i]
+				case hyperv1.ClusterReachableType:
+					reachableCond = &conditions[i]
+				}
+			}
+
+			g.Expect(provisionedCond).ToNot(BeNil())
+			g.Expect(provisionedCond.Status).To(Equal(tc.expectedProvisionedStatus))
+			g.Expect(provisionedCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(provisionedCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(provisionedCond.Reason).ToNot(BeEmpty())
+			g.Expect(provisionedCond.Message).ToNot(BeEmpty())
+
+			g.Expect(readyCond).ToNot(BeNil())
+			g.Expect(readyCond.Status).To(Equal(tc.expectedReadyStatus))
+			g.Expect(readyCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(readyCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(readyCond.Reason).ToNot(BeEmpty())
+			g.Expect(readyCond.Message).ToNot(BeEmpty())
+
+			g.Expect(dnsReadyCond).ToNot(BeNil())
+			g.Expect(dnsReadyCond.Status).To(Equal(tc.expectedDNSReadyStatus))
+			g.Expect(dnsReadyCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(dnsReadyCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(dnsReadyCond.Reason).ToNot(BeEmpty())
+			g.Expect(dnsReadyCond.Message).ToNot(BeEmpty())
+
+			g.Expect(reachableCond).ToNot(BeNil())
+			g.Expect(reachableCond.Status).To(Equal(tc.expectedReachableStatus))
+			g.Expect(reachableCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(reachableCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(reachableCond.Reason).ToNot(BeEmpty())
+			g.Expect(reachableCond.Message).ToNot(BeEmpty())
+		})
+	}
+}
+
+func TestComputeProvisionedCondition(t *testing.T) {
+	now := metav1.Now()
+	earlier := metav1.NewTime(now.Add(-5 * time.Minute))
+
+	testCases := []struct {
+		name                      string
+		hcluster                  *hyperv1.HostedCluster
+		expectedStatus            corev1.ConditionStatus
+		expectedReason            string
+		expectedMessageSubstring  string
+		shouldPreserveTransition  bool
+	}{
+		{
+			name: "Cluster is provisioned - endpoint and kubeconfig exist",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterProvisioned",
+			expectedMessageSubstring: "provisioned successfully",
+		},
+		{
+			name: "Cluster not provisioned - no endpoint",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "Provisioning",
+			expectedMessageSubstring: "being provisioned",
+		},
+		{
+			name: "Cluster not provisioned - no kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: nil,
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "Provisioning",
+			expectedMessageSubstring: "being provisioned",
+		},
+		{
+			name: "Cluster not provisioned - no endpoint or kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "Provisioning",
+			expectedMessageSubstring: "being provisioned",
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (True)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterProvisionedType,
+							Status:             corev1.ConditionTrue,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterProvisioned",
+			expectedMessageSubstring: "provisioned successfully",
+			shouldPreserveTransition: true,
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (False)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterProvisionedType,
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "Provisioning",
+			expectedMessageSubstring: "being provisioned",
+			shouldPreserveTransition: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			condition := computeProvisionedCondition(tc.hcluster, now)
+
+			g.Expect(condition.Type).To(Equal(hyperv1.ClusterProvisionedType))
+			g.Expect(condition.Status).To(Equal(tc.expectedStatus))
+			g.Expect(condition.Reason).To(Equal(tc.expectedReason))
+			g.Expect(condition.Message).To(ContainSubstring(tc.expectedMessageSubstring))
+			g.Expect(condition.LastProbeTime).To(Equal(now))
+
+			if tc.shouldPreserveTransition {
+				g.Expect(condition.LastTransitionTime).To(Equal(earlier))
+			} else {
+				g.Expect(condition.LastTransitionTime).To(Equal(now))
+			}
+		})
+	}
+}
+
+func TestComputeReadyCondition(t *testing.T) {
+	now := metav1.Now()
+	earlier := metav1.NewTime(now.Add(-5 * time.Minute))
+
+	testCases := []struct {
+		name                      string
+		hcluster                  *hyperv1.HostedCluster
+		expectedStatus            corev1.ConditionStatus
+		expectedReason            string
+		expectedMessageSubstring  string
+		shouldPreserveTransition  bool
+	}{
+		{
+			name: "Cluster is ready - Available is True",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterReady",
+			expectedMessageSubstring: "ready and available",
+		},
+		{
+			name: "Cluster not ready - Available is False",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    string(hyperv1.HostedClusterAvailable),
+							Status:  metav1.ConditionFalse,
+							Message: "API server not responding",
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotReady",
+			expectedMessageSubstring: "API server not responding",
+		},
+		{
+			name: "Cluster not ready - Available is Unknown",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    string(hyperv1.HostedClusterAvailable),
+							Status:  metav1.ConditionUnknown,
+							Message: "Status unknown",
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotReady",
+			expectedMessageSubstring: "Status unknown",
+		},
+		{
+			name: "Cluster not ready - No Available condition",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotReady",
+			expectedMessageSubstring: "not yet ready",
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (True)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterReadyType,
+							Status:             corev1.ConditionTrue,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterReady",
+			expectedMessageSubstring: "ready and available",
+			shouldPreserveTransition: true,
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (False)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+					},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterReadyType,
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotReady",
+			shouldPreserveTransition: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			condition := computeReadyCondition(tc.hcluster, now)
+
+			g.Expect(condition.Type).To(Equal(hyperv1.ClusterReadyType))
+			g.Expect(condition.Status).To(Equal(tc.expectedStatus))
+			g.Expect(condition.Reason).To(Equal(tc.expectedReason))
+			g.Expect(condition.Message).To(ContainSubstring(tc.expectedMessageSubstring))
+			g.Expect(condition.LastProbeTime).To(Equal(now))
+
+			if tc.shouldPreserveTransition {
+				g.Expect(condition.LastTransitionTime).To(Equal(earlier))
+			} else {
+				g.Expect(condition.LastTransitionTime).To(Equal(now))
+			}
+		})
+	}
+}
+
+func TestComputeDNSReadyCondition(t *testing.T) {
+	now := metav1.Now()
+	earlier := metav1.NewTime(now.Add(-5 * time.Minute))
+
+	testCases := []struct {
+		name                      string
+		hcluster                  *hyperv1.HostedCluster
+		expectedStatus            corev1.ConditionStatus
+		expectedReason            string
+		expectedMessageSubstring  string
+		shouldPreserveTransition  bool
+	}{
+		{
+			name: "DNS is ready - endpoint host is set",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "DNSReady",
+			expectedMessageSubstring: "DNS is properly configured",
+		},
+		{
+			name: "DNS not ready - no endpoint host",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "DNSNotReady",
+			expectedMessageSubstring: "DNS configuration pending",
+		},
+		{
+			name: "DNS not ready - empty endpoint host",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "",
+						Port: 6443,
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "DNSNotReady",
+			expectedMessageSubstring: "DNS configuration pending",
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (True)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterDNSReadyType,
+							Status:             corev1.ConditionTrue,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "DNSReady",
+			expectedMessageSubstring: "DNS is properly configured",
+			shouldPreserveTransition: true,
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (False)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterDNSReadyType,
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "DNSNotReady",
+			expectedMessageSubstring: "DNS configuration pending",
+			shouldPreserveTransition: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			condition := computeDNSReadyCondition(tc.hcluster, now)
+
+			g.Expect(condition.Type).To(Equal(hyperv1.ClusterDNSReadyType))
+			g.Expect(condition.Status).To(Equal(tc.expectedStatus))
+			g.Expect(condition.Reason).To(Equal(tc.expectedReason))
+			g.Expect(condition.Message).To(ContainSubstring(tc.expectedMessageSubstring))
+			g.Expect(condition.LastProbeTime).To(Equal(now))
+
+			if tc.shouldPreserveTransition {
+				g.Expect(condition.LastTransitionTime).To(Equal(earlier))
+			} else {
+				g.Expect(condition.LastTransitionTime).To(Equal(now))
+			}
+		})
+	}
+}
+
+func TestComputeReachableCondition(t *testing.T) {
+	now := metav1.Now()
+	earlier := metav1.NewTime(now.Add(-5 * time.Minute))
+
+	testCases := []struct {
+		name                      string
+		hcluster                  *hyperv1.HostedCluster
+		expectedStatus            corev1.ConditionStatus
+		expectedReason            string
+		expectedMessageSubstring  string
+		shouldPreserveTransition  bool
+	}{
+		{
+			name: "Cluster is reachable - Available is True",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterReachable",
+			expectedMessageSubstring: "Cluster API is reachable",
+		},
+		{
+			name: "Cluster not reachable - Available is False",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "ClusterUnreachable",
+			expectedMessageSubstring: "Cluster API is not reachable",
+		},
+		{
+			name: "Cluster not reachable - Available is Unknown",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionUnknown,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "ClusterUnreachable",
+			expectedMessageSubstring: "Cluster API is not reachable",
+		},
+		{
+			name: "Cluster not reachable - No Available condition",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "ClusterUnreachable",
+			expectedMessageSubstring: "Cluster API is not reachable",
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (True)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterReachableType,
+							Status:             corev1.ConditionTrue,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "ClusterReachable",
+			expectedMessageSubstring: "Cluster API is reachable",
+			shouldPreserveTransition: true,
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (False)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+					},
+					ClusterDeploymentConditions: []hyperv1.ClusterDeploymentCondition{
+						{
+							Type:               hyperv1.ClusterReachableType,
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "ClusterUnreachable",
+			expectedMessageSubstring: "Cluster API is not reachable",
+			shouldPreserveTransition: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			condition := computeReachableCondition(tc.hcluster, now)
+
+			g.Expect(condition.Type).To(Equal(hyperv1.ClusterReachableType))
+			g.Expect(condition.Status).To(Equal(tc.expectedStatus))
+			g.Expect(condition.Reason).To(Equal(tc.expectedReason))
+			g.Expect(condition.Message).To(ContainSubstring(tc.expectedMessageSubstring))
+			g.Expect(condition.LastProbeTime).To(Equal(now))
+
+			if tc.shouldPreserveTransition {
+				g.Expect(condition.LastTransitionTime).To(Equal(earlier))
+			} else {
+				g.Expect(condition.LastTransitionTime).To(Equal(now))
+			}
+		})
+	}
+}
+
+func TestFindClusterDeploymentCondition(t *testing.T) {
+	testCases := []struct {
+		name           string
+		conditions     []hyperv1.ClusterDeploymentCondition
+		conditionType  hyperv1.ClusterDeploymentConditionType
+		expectedFound  bool
+		expectedStatus corev1.ConditionStatus
+	}{
+		{
+			name: "Condition found",
+			conditions: []hyperv1.ClusterDeploymentCondition{
+				{
+					Type:   hyperv1.ClusterProvisionedType,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hyperv1.ClusterReadyType,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hyperv1.ClusterReadyType,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "Condition not found",
+			conditions: []hyperv1.ClusterDeploymentCondition{
+				{
+					Type:   hyperv1.ClusterProvisionedType,
+					Status: corev1.ConditionTrue,
+				},
+			},
+			conditionType: hyperv1.ClusterReadyType,
+			expectedFound: false,
+		},
+		{
+			name:          "Empty conditions list",
+			conditions:    []hyperv1.ClusterDeploymentCondition{},
+			conditionType: hyperv1.ClusterReadyType,
+			expectedFound: false,
+		},
+		{
+			name:          "Nil conditions list",
+			conditions:    nil,
+			conditionType: hyperv1.ClusterReadyType,
+			expectedFound: false,
+		},
+		{
+			name: "First condition matches",
+			conditions: []hyperv1.ClusterDeploymentCondition{
+				{
+					Type:   hyperv1.ClusterDNSReadyType,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hyperv1.ClusterReadyType,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hyperv1.ClusterDNSReadyType,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "Last condition matches",
+			conditions: []hyperv1.ClusterDeploymentCondition{
+				{
+					Type:   hyperv1.ClusterProvisionedType,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hyperv1.ClusterReachableType,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hyperv1.ClusterReachableType,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionFalse,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			result := findClusterDeploymentCondition(tc.conditions, tc.conditionType)
+
+			if tc.expectedFound {
+				g.Expect(result).ToNot(BeNil())
+				g.Expect(result.Type).To(Equal(tc.conditionType))
+				g.Expect(result.Status).To(Equal(tc.expectedStatus))
+			} else {
+				g.Expect(result).To(BeNil())
+			}
+		})
+	}
+}

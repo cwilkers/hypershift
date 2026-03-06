@@ -1820,6 +1820,46 @@ func ToPayloadArch(arch string) PayloadArchType {
 	}
 }
 
+// ClusterDeploymentConditionType defines the type of ClusterDeployment condition
+type ClusterDeploymentConditionType string
+
+const (
+	// ClusterProvisionedType indicates the cluster has been provisioned
+	ClusterProvisionedType ClusterDeploymentConditionType = "Provisioned"
+
+	// ClusterReadyType indicates the cluster is ready for use
+	ClusterReadyType ClusterDeploymentConditionType = "Ready"
+
+	// ClusterDNSReadyType indicates DNS is properly configured
+	ClusterDNSReadyType ClusterDeploymentConditionType = "DNSReady"
+
+	// ClusterReachableType indicates the cluster API is reachable
+	ClusterReachableType ClusterDeploymentConditionType = "Reachable"
+)
+
+// ClusterDeploymentCondition represents a Hive ClusterDeployment-compatible condition
+// that is synthesized from HostedCluster state for consumers expecting this format.
+// These conditions are computed by the HyperShift operator based on the actual cluster
+// state, not copied from ClusterDeployment objects.
+type ClusterDeploymentCondition struct {
+	// Type is the type of the condition.
+	Type ClusterDeploymentConditionType `json:"type"`
+	// Status is the status of the condition (True, False, Unknown).
+	Status corev1.ConditionStatus `json:"status"`
+	// LastProbeTime is the last time the condition was probed.
+	// +optional
+	LastProbeTime metav1.Time `json:"lastProbeTime,omitempty"`
+	// LastTransitionTime is the last time the condition transitioned from one status to another.
+	// +optional
+	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
+	// Reason is a unique, one-word, CamelCase reason for the condition's last transition.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// Message is a human-readable message indicating details about last transition.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // HostedClusterStatus is the latest observed status of a HostedCluster.
 type HostedClusterStatus struct {
 	// conditions represents the latest available observations of a control
@@ -1885,6 +1925,16 @@ type HostedClusterStatus struct {
 	// configuration contains the cluster configuration status of the HostedCluster
 	// +optional
 	Configuration *ConfigurationStatus `json:"configuration,omitempty"`
+
+	// clusterDeploymentConditions contains Hive ClusterDeployment-compatible conditions
+	// synthesized from the HostedCluster state. This provides a familiar interface for
+	// consumers like the siteconfig operator that expect ClusterDeployment conditions.
+	// These conditions are computed by the HyperShift operator based on the actual
+	// cluster state, not copied from ClusterDeployment objects.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	ClusterDeploymentConditions []ClusterDeploymentCondition `json:"clusterDeploymentConditions,omitempty"`
 }
 
 // PlatformStatus contains platform-specific status
