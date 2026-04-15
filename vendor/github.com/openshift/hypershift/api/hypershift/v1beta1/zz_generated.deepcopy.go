@@ -23,6 +23,7 @@ package v1beta1
 import (
 	configv1 "github.com/openshift/api/config/v1"
 	operatorv1 "github.com/openshift/api/operator/v1"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -2442,6 +2443,13 @@ func (in *HostedClusterStatus) DeepCopyInto(out *HostedClusterStatus) {
 		in, out := &in.Configuration, &out.Configuration
 		*out = new(ConfigurationStatus)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ClusterDeploymentConditions != nil {
+		in, out := &in.ClusterDeploymentConditions, &out.ClusterDeploymentConditions
+		*out = make([]hivev1.ClusterDeploymentCondition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

@@ -72,6 +72,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -490,6 +491,10 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 
 	// If deleted, clean up and return early.
 	if !hcluster.DeletionTimestamp.IsZero() {
+		// Compute ClusterDeployment-compatible conditions for external consumers during deletion.
+		// This ensures ClusterProvisionStoppedType flips to True during teardown.
+		hcluster.Status.ClusterDeploymentConditions = computeClusterDeploymentConditions(hcluster)
+
 		// This new condition is necessary for OCM personnel to report any cloud dangling objects to the user.
 		// The grace period is customizable using an annotation called HCDestroyGracePeriodAnnotation. It's a time.Duration annotation.
 		// This annotation will create a new condition called HostedClusterDestroyed which in conjunction with CloudResourcesDestroyed
@@ -504,6 +509,10 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 			}
 			if !completed {
 				log.Info("hostedcluster is still deleting", "name", req.NamespacedName)
+				// Persist status updates including ClusterDeploymentConditions
+				if result, err := r.updateHostedClusterStatus(ctx, hcluster); err != nil || result.Requeue {
+					return result, err
+				}
 				return ctrl.Result{RequeueAfter: clusterDeletionRequeueDuration}, nil
 			}
 		}
@@ -591,9 +600,18 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 
 			if time.Since(hostedClusterDestroyedCondition.LastTransitionTime.Time) < hcDestroyGracePeriod {
 				log.Info("Waiting for grace period", "gracePeriod", hcDestroyGracePeriod)
+				// Persist status updates including ClusterDeploymentConditions
+				if result, err := r.updateHostedClusterStatus(ctx, hcluster); err != nil || result.Requeue {
+					return result, err
+				}
 				return ctrl.Result{RequeueAfter: hcDestroyGracePeriod - time.Since(hostedClusterDestroyedCondition.LastTransitionTime.Time)}, nil
 			}
 			log.Info("grace period finished", "gracePeriod", hcDestroyGracePeriod)
+		}
+
+		// Persist final status updates including ClusterDeploymentConditions before removing finalizer
+		if result, err := r.updateHostedClusterStatus(ctx, hcluster); err != nil || result.Requeue {
+			return result, err
 		}
 
 		// Now we can remove the finalizer.
@@ -1265,6 +1283,9 @@ func (r *HostedClusterReconciler) reconcile(ctx context.Context, req ctrl.Reques
 	if hcp != nil {
 		hcluster.Status.Configuration = hcp.Status.Configuration
 	}
+
+	// Compute ClusterDeployment-compatible conditions for external consumers
+	hcluster.Status.ClusterDeploymentConditions = computeClusterDeploymentConditions(hcluster)
 
 	// Persist status updates
 	if err := r.Client.Status().Update(ctx, hcluster); err != nil {
@@ -5285,4 +5306,253 @@ func computeAzurePLSCondition(azPLSList hyperv1.AzurePrivateLinkServiceList, con
 		resourceConditions[i] = pls.Status.Conditions
 	}
 	return computeEndpointServiceCondition(resourceConditions, conditionType, hyperv1.AzurePLSErrorReason, hyperv1.AzurePLSSuccessReason, "AzurePrivateLinkService conditions not found")
+}
+
+// computeClusterDeploymentConditions generates Hive ClusterDeployment-compatible
+// conditions based on the current HostedCluster state
+func computeClusterDeploymentConditions(hcluster *hyperv1.HostedCluster) []hivev1.ClusterDeploymentCondition {
+	now := metav1.Now()
+	conditions := []hivev1.ClusterDeploymentCondition{}
+
+	// Provisioned Condition - True when cluster is successfully provisioned
+	provisionedCondition := computeProvisionedCondition(hcluster, now)
+	conditions = append(conditions, provisionedCondition)
+
+	// ProvisionFailed Condition - True when provision has failed
+	provisionFailedCondition := computeProvisionFailedCondition(hcluster, now)
+	conditions = append(conditions, provisionFailedCondition)
+
+	// ProvisionStopped Condition - True when provision has been stopped
+	provisionStoppedCondition := computeProvisionStoppedCondition(hcluster, now)
+	conditions = append(conditions, provisionStoppedCondition)
+
+	// RequirementsMet Condition - True when all requirements are met
+	requirementsMetCondition := computeRequirementsMetCondition(hcluster, now)
+	conditions = append(conditions, requirementsMetCondition)
+
+	return conditions
+}
+
+// computeProvisionedCondition determines if the cluster is provisioned
+func computeProvisionedCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hivev1.ClusterDeploymentCondition {
+	// Provisioned is True when the cluster has been successfully provisioned:
+	// control plane endpoint and kubeconfig exist, and the Cluster Version Operator
+	// reports available (ClusterVersionAvailable on HostedCluster mirrors CVO on HCP).
+	hasInfra := hcluster.Status.ControlPlaneEndpoint.Host != "" && hcluster.Status.KubeConfig != nil
+	cvoCond := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.ClusterVersionAvailable))
+	cvoAvailable := cvoCond != nil && cvoCond.Status == metav1.ConditionTrue
+	isProvisioned := hasInfra && cvoAvailable
+
+	if isProvisioned {
+		return buildClusterDeploymentCondition(
+			hcluster.Status.ClusterDeploymentConditions,
+			hivev1.ProvisionedCondition,
+			corev1.ConditionTrue,
+			"Provisioned",
+			"Cluster has been provisioned",
+			probeTime,
+		)
+	}
+
+	// Not provisioned
+	var reason, message string
+	if hasInfra && !cvoAvailable {
+		reason = "WaitingForClusterVersionOperator"
+		if cvoCond != nil {
+			message = fmt.Sprintf("Cluster Version Operator is not available: %s", cvoCond.Message)
+		} else {
+			message = "Waiting for Cluster Version Operator to become available"
+		}
+	} else {
+		reason = "NotProvisioned"
+		message = "Cluster is not yet provisioned"
+	}
+
+	return buildClusterDeploymentCondition(
+		hcluster.Status.ClusterDeploymentConditions,
+		hivev1.ProvisionedCondition,
+		corev1.ConditionFalse,
+		reason,
+		message,
+		probeTime,
+	)
+}
+
+// computeProvisionFailedCondition determines if provision has failed
+func computeProvisionFailedCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hivev1.ClusterDeploymentCondition {
+	// ProvisionFailed is True when there's a degraded condition indicating provision failure
+	// Check for degraded conditions that indicate provision failure
+	degradedCondition := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.HostedClusterDegraded))
+
+	isFailed := false
+	failureReason := ""
+	failureMessage := ""
+
+	if degradedCondition != nil && degradedCondition.Status == metav1.ConditionTrue {
+		// Check if any Progressing-type condition is still True.
+		// During normal installation, cluster operators come online and may have Progressing conditions.
+		// We should not mark as Failed while progress is still being made.
+		hostedClusterProgressing := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.HostedClusterProgressing))
+		clusterVersionProgressing := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.ClusterVersionProgressing))
+
+		anyProgressingTrue := (hostedClusterProgressing != nil && hostedClusterProgressing.Status == metav1.ConditionTrue) ||
+			(clusterVersionProgressing != nil && clusterVersionProgressing.Status == metav1.ConditionTrue)
+
+		// Consider it failed only if degraded AND no progressing conditions are active
+		if !anyProgressingTrue {
+			isFailed = true
+			failureReason = degradedCondition.Reason
+			failureMessage = degradedCondition.Message
+		}
+	}
+
+	if isFailed {
+		return buildClusterDeploymentCondition(
+			hcluster.Status.ClusterDeploymentConditions,
+			hivev1.ProvisionFailedCondition,
+			corev1.ConditionTrue,
+			failureReason,
+			failureMessage,
+			probeTime,
+		)
+	}
+
+	return buildClusterDeploymentCondition(
+		hcluster.Status.ClusterDeploymentConditions,
+		hivev1.ProvisionFailedCondition,
+		corev1.ConditionFalse,
+		"ProvisionNotFailed",
+		"Provision has not failed",
+		probeTime,
+	)
+}
+
+// computeProvisionStoppedCondition determines if provision has been stopped
+func computeProvisionStoppedCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hivev1.ClusterDeploymentCondition {
+	// ProvisionStopped is True when the cluster is being deleted or has been paused
+	// Check if cluster is being deleted (has deletion timestamp) or paused (ReconciliationActive is False)
+	reconciliationActive := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.ReconciliationActive))
+	isPaused := reconciliationActive != nil && reconciliationActive.Status == metav1.ConditionFalse
+	isStopped := !hcluster.DeletionTimestamp.IsZero() || isPaused
+
+	if isStopped {
+		var reason, message string
+		if !hcluster.DeletionTimestamp.IsZero() {
+			reason = "DeletionRequested"
+			message = "Cluster deletion has been requested"
+		} else {
+			reason = "ReconciliationPaused"
+			message = "Cluster reconciliation has been paused"
+		}
+
+		return buildClusterDeploymentCondition(
+			hcluster.Status.ClusterDeploymentConditions,
+			hivev1.ProvisionStoppedCondition,
+			corev1.ConditionTrue,
+			reason,
+			message,
+			probeTime,
+		)
+	}
+
+	return buildClusterDeploymentCondition(
+		hcluster.Status.ClusterDeploymentConditions,
+		hivev1.ProvisionStoppedCondition,
+		corev1.ConditionFalse,
+		"NotStopped",
+		"Provision has not been stopped",
+		probeTime,
+	)
+}
+
+// computeRequirementsMetCondition determines if all requirements are met for provisioning
+func computeRequirementsMetCondition(hcluster *hyperv1.HostedCluster, probeTime metav1.Time) hivev1.ClusterDeploymentCondition {
+	// RequirementsMet is True when cluster has valid configuration and no validation errors
+	// Check for all prerequisite conditions that block reconciliation
+	validConfigCondition := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.ValidHostedClusterConfiguration))
+	supportedHostedCluster := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.SupportedHostedCluster))
+	validReleaseImage := meta.FindStatusCondition(hcluster.Status.Conditions, string(hyperv1.ValidReleaseImage))
+
+	requirementsMet := validConfigCondition != nil && validConfigCondition.Status == metav1.ConditionTrue &&
+		supportedHostedCluster != nil && supportedHostedCluster.Status == metav1.ConditionTrue &&
+		validReleaseImage != nil && validReleaseImage.Status == metav1.ConditionTrue
+
+	if requirementsMet {
+		return buildClusterDeploymentCondition(
+			hcluster.Status.ClusterDeploymentConditions,
+			hivev1.RequirementsMetCondition,
+			corev1.ConditionTrue,
+			"AllRequirementsMet",
+			"All cluster requirements have been met",
+			probeTime,
+		)
+	}
+
+	// Requirements not met
+	message := "Cluster requirements have not been met"
+	if validConfigCondition != nil && validConfigCondition.Message != "" {
+		message = validConfigCondition.Message
+	}
+
+	return buildClusterDeploymentCondition(
+		hcluster.Status.ClusterDeploymentConditions,
+		hivev1.RequirementsMetCondition,
+		corev1.ConditionFalse,
+		"RequirementsNotMet",
+		message,
+		probeTime,
+	)
+}
+
+// findClusterDeploymentCondition finds a condition in the slice by type.
+// Follows the same pattern as meta.FindStatusCondition from k8s.io/apimachinery/pkg/api/meta,
+// but typed for Hive's ClusterDeploymentCondition which has a different structure
+// (includes LastProbeTime, uses ClusterDeploymentConditionType instead of string).
+func findClusterDeploymentCondition(conditions []hivev1.ClusterDeploymentCondition, conditionType hivev1.ClusterDeploymentConditionType) *hivev1.ClusterDeploymentCondition {
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+// buildClusterDeploymentCondition creates a ClusterDeploymentCondition with proper transition time handling.
+// If the condition already exists with the same status, it preserves the LastTransitionTime.
+// Otherwise, it sets LastTransitionTime to the current probeTime.
+func buildClusterDeploymentCondition(
+	existingConditions []hivev1.ClusterDeploymentCondition,
+	conditionType hivev1.ClusterDeploymentConditionType,
+	status corev1.ConditionStatus,
+	reason string,
+	message string,
+	probeTime metav1.Time,
+) hivev1.ClusterDeploymentCondition {
+	condition := hivev1.ClusterDeploymentCondition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastProbeTime:      probeTime,
+		LastTransitionTime: probeTime,
+	}
+
+	// Preserve LastTransitionTime if status hasn't changed
+	existingCondition := findClusterDeploymentCondition(existingConditions, conditionType)
+	if existingCondition != nil && existingCondition.Status == status {
+		condition.LastTransitionTime = existingCondition.LastTransitionTime
+	}
+
+	return condition
+}
+
+// updateHostedClusterStatus updates the hostedcluster status, handling conflicts with requeue
+func (r *HostedClusterReconciler) updateHostedClusterStatus(ctx context.Context, hcluster *hyperv1.HostedCluster) (ctrl.Result, error) {
+	if err := r.Client.Status().Update(ctx, hcluster); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to update status: %w", err)
+	}
+	return ctrl.Result{}, nil
 }

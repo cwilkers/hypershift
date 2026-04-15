@@ -45,6 +45,7 @@ import (
 	"github.com/openshift/hypershift/support/util/fakeimagemetadataprovider"
 
 	configv1 "github.com/openshift/api/config/v1"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -6526,6 +6527,778 @@ func TestComputeEndpointServiceCondition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			condition := computeEndpointServiceCondition(tc.resourceConditions, tc.conditionType, testErrorReason, testSuccessReason, testNotFoundMsg)
 			g.Expect(condition).To(Equal(tc.expected))
+		})
+	}
+}
+func TestComputeClusterDeploymentConditions(t *testing.T) {
+	testCases := []struct {
+		name                           string
+		hcluster                       *hyperv1.HostedCluster
+		expectedConditionsCount        int
+		expectedProvisionedStatus      corev1.ConditionStatus
+		expectedProvisionFailedStatus  corev1.ConditionStatus
+		expectedProvisionStoppedStatus corev1.ConditionStatus
+		expectedRequirementsMetStatus  corev1.ConditionStatus
+	}{
+		{
+			name: "Fully available cluster",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionTrue,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "Cluster being provisioned - no endpoint yet",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "Cluster provisioned but not yet available",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionFalse,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionTrue,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "Cluster with no Available condition",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionTrue,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionFalse,
+		},
+		{
+			name: "Cluster waiting on Cluster Version Operator",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:    string(hyperv1.ClusterVersionAvailable),
+							Status:  metav1.ConditionFalse,
+							Message: "some operators still progressing",
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "Cluster with endpoint but no kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: nil,
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "When cluster is being deleted it should set ProvisionStopped to True",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "test-cluster",
+					Namespace:         "test-namespace",
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterAvailable),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionTrue,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionTrue,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "When degraded but still progressing it should not show as failed",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterDegraded),
+							Status: metav1.ConditionTrue,
+							Reason: "SomeOperatorsDegraded",
+						},
+						{
+							Type:   string(hyperv1.HostedClusterProgressing),
+							Status: metav1.ConditionTrue,
+							Reason: "OperatorsStillStarting",
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "When degraded and ClusterVersionProgressing is true it should not show as failed",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.HostedClusterDegraded),
+							Status: metav1.ConditionTrue,
+							Reason: "ClusterOperatorsDegraded",
+						},
+						{
+							Type:   string(hyperv1.ClusterVersionProgressing),
+							Status: metav1.ConditionTrue,
+							Reason: "ClusterOperatorsStillProgressing",
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test-cluster.example.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{
+						Name: "kubeconfig",
+					},
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionFalse,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+		{
+			name: "When degraded and not progressing it should show as failed",
+			hcluster: &hyperv1.HostedCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "test-namespace",
+				},
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    string(hyperv1.HostedClusterDegraded),
+							Status:  metav1.ConditionTrue,
+							Reason:  "InfrastructureFailure",
+							Message: "Infrastructure provisioning failed",
+						},
+						{
+							Type:   string(hyperv1.HostedClusterProgressing),
+							Status: metav1.ConditionFalse,
+						},
+						{
+							Type:   string(hyperv1.ClusterVersionProgressing),
+							Status: metav1.ConditionFalse,
+						},
+						{
+							Type:   string(hyperv1.ValidHostedClusterConfiguration),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.SupportedHostedCluster),
+							Status: metav1.ConditionTrue,
+						},
+						{
+							Type:   string(hyperv1.ValidReleaseImage),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+				},
+			},
+			expectedConditionsCount:        4,
+			expectedProvisionedStatus:      corev1.ConditionFalse,
+			expectedProvisionFailedStatus:  corev1.ConditionTrue,
+			expectedProvisionStoppedStatus: corev1.ConditionFalse,
+			expectedRequirementsMetStatus:  corev1.ConditionTrue,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			conditions := computeClusterDeploymentConditions(tc.hcluster)
+
+			// Verify we got the expected number of conditions
+			g.Expect(conditions).To(HaveLen(tc.expectedConditionsCount))
+
+			// Verify each condition type exists and has correct status
+			var provisionedCond, provisionFailedCond, provisionStoppedCond, requirementsMetCond *hivev1.ClusterDeploymentCondition
+			for i := range conditions {
+				switch conditions[i].Type {
+				case hivev1.ProvisionedCondition:
+					provisionedCond = &conditions[i]
+				case hivev1.ProvisionFailedCondition:
+					provisionFailedCond = &conditions[i]
+				case hivev1.ProvisionStoppedCondition:
+					provisionStoppedCond = &conditions[i]
+				case hivev1.RequirementsMetCondition:
+					requirementsMetCond = &conditions[i]
+				}
+			}
+
+			g.Expect(provisionedCond).ToNot(BeNil())
+			g.Expect(provisionedCond.Status).To(Equal(tc.expectedProvisionedStatus))
+			g.Expect(provisionedCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(provisionedCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(provisionedCond.Reason).ToNot(BeEmpty())
+			g.Expect(provisionedCond.Message).ToNot(BeEmpty())
+
+			g.Expect(provisionFailedCond).ToNot(BeNil())
+			g.Expect(provisionFailedCond.Status).To(Equal(tc.expectedProvisionFailedStatus))
+			g.Expect(provisionFailedCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(provisionFailedCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(provisionFailedCond.Reason).ToNot(BeEmpty())
+			g.Expect(provisionFailedCond.Message).ToNot(BeEmpty())
+
+			g.Expect(provisionStoppedCond).ToNot(BeNil())
+			g.Expect(provisionStoppedCond.Status).To(Equal(tc.expectedProvisionStoppedStatus))
+			g.Expect(provisionStoppedCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(provisionStoppedCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(provisionStoppedCond.Reason).ToNot(BeEmpty())
+			g.Expect(provisionStoppedCond.Message).ToNot(BeEmpty())
+
+			g.Expect(requirementsMetCond).ToNot(BeNil())
+			g.Expect(requirementsMetCond.Status).To(Equal(tc.expectedRequirementsMetStatus))
+			g.Expect(requirementsMetCond.LastProbeTime).ToNot(BeZero())
+			g.Expect(requirementsMetCond.LastTransitionTime).ToNot(BeZero())
+			g.Expect(requirementsMetCond.Reason).ToNot(BeEmpty())
+			g.Expect(requirementsMetCond.Message).ToNot(BeEmpty())
+		})
+	}
+}
+
+func TestComputeProvisionedCondition(t *testing.T) {
+	now := metav1.Now()
+	earlier := metav1.NewTime(now.Add(-5 * time.Minute))
+
+	testCases := []struct {
+		name                     string
+		hcluster                 *hyperv1.HostedCluster
+		expectedStatus           corev1.ConditionStatus
+		expectedReason           string
+		expectedMessageSubstring string
+		shouldPreserveTransition bool
+	}{
+		{
+			name: "Cluster is provisioned - endpoint, kubeconfig, and CVO available",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "Provisioned",
+			expectedMessageSubstring: "Cluster has been provisioned",
+		},
+		{
+			name: "Cluster not provisioned - no endpoint",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotProvisioned",
+			expectedMessageSubstring: "not yet provisioned",
+		},
+		{
+			name: "Cluster not provisioned - no kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: nil,
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotProvisioned",
+			expectedMessageSubstring: "not yet provisioned",
+		},
+		{
+			name: "Cluster not provisioned - no endpoint or kubeconfig",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotProvisioned",
+			expectedMessageSubstring: "not yet provisioned",
+		},
+		{
+			name: "Cluster not provisioned - CVO not available yet",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:    string(hyperv1.ClusterVersionAvailable),
+							Status:  metav1.ConditionFalse,
+							Message: "working toward 4.y.z",
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "WaitingForClusterVersionOperator",
+			expectedMessageSubstring: "Cluster Version Operator is not available",
+		},
+		{
+			name: "Cluster not provisioned - CVO condition missing",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "WaitingForClusterVersionOperator",
+			expectedMessageSubstring: "Waiting for Cluster Version Operator",
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (True)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   string(hyperv1.ClusterVersionAvailable),
+							Status: metav1.ConditionTrue,
+						},
+					},
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{
+						Host: "api.test.com",
+						Port: 6443,
+					},
+					KubeConfig: &corev1.LocalObjectReference{Name: "kubeconfig"},
+					ClusterDeploymentConditions: []hivev1.ClusterDeploymentCondition{
+						{
+							Type:               hivev1.ProvisionedCondition,
+							Status:             corev1.ConditionTrue,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionTrue,
+			expectedReason:           "Provisioned",
+			expectedMessageSubstring: "Cluster has been provisioned",
+			shouldPreserveTransition: true,
+		},
+		{
+			name: "Preserves LastTransitionTime when status unchanged (False)",
+			hcluster: &hyperv1.HostedCluster{
+				Status: hyperv1.HostedClusterStatus{
+					ControlPlaneEndpoint: hyperv1.APIEndpoint{},
+					KubeConfig:           nil,
+					ClusterDeploymentConditions: []hivev1.ClusterDeploymentCondition{
+						{
+							Type:               hivev1.ProvisionedCondition,
+							Status:             corev1.ConditionFalse,
+							LastTransitionTime: earlier,
+						},
+					},
+				},
+			},
+			expectedStatus:           corev1.ConditionFalse,
+			expectedReason:           "NotProvisioned",
+			expectedMessageSubstring: "not yet provisioned",
+			shouldPreserveTransition: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			condition := computeProvisionedCondition(tc.hcluster, now)
+
+			g.Expect(condition.Type).To(Equal(hivev1.ProvisionedCondition))
+			g.Expect(condition.Status).To(Equal(tc.expectedStatus))
+			g.Expect(condition.Reason).To(Equal(tc.expectedReason))
+			g.Expect(condition.Message).To(ContainSubstring(tc.expectedMessageSubstring))
+			g.Expect(condition.LastProbeTime).To(Equal(now))
+
+			if tc.shouldPreserveTransition {
+				g.Expect(condition.LastTransitionTime).To(Equal(earlier))
+			} else {
+				g.Expect(condition.LastTransitionTime).To(Equal(now))
+			}
+		})
+	}
+}
+
+// TODO: Add tests for new condition functions:
+// - TestComputeProvisionFailedCondition
+// - TestComputeProvisionStoppedCondition
+// - TestComputeRequirementsMetCondition
+
+func TestFindClusterDeploymentCondition(t *testing.T) {
+	testCases := []struct {
+		name           string
+		conditions     []hivev1.ClusterDeploymentCondition
+		conditionType  hivev1.ClusterDeploymentConditionType
+		expectedFound  bool
+		expectedStatus corev1.ConditionStatus
+	}{
+		{
+			name: "Condition found",
+			conditions: []hivev1.ClusterDeploymentCondition{
+				{
+					Type:   hivev1.ProvisionedCondition,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hivev1.ProvisionFailedCondition,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hivev1.ProvisionFailedCondition,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "Condition not found",
+			conditions: []hivev1.ClusterDeploymentCondition{
+				{
+					Type:   hivev1.ProvisionedCondition,
+					Status: corev1.ConditionTrue,
+				},
+			},
+			conditionType: hivev1.ProvisionFailedCondition,
+			expectedFound: false,
+		},
+		{
+			name:          "Empty conditions list",
+			conditions:    []hivev1.ClusterDeploymentCondition{},
+			conditionType: hivev1.ProvisionFailedCondition,
+			expectedFound: false,
+		},
+		{
+			name:          "Nil conditions list",
+			conditions:    nil,
+			conditionType: hivev1.ProvisionFailedCondition,
+			expectedFound: false,
+		},
+		{
+			name: "First condition matches",
+			conditions: []hivev1.ClusterDeploymentCondition{
+				{
+					Type:   hivev1.ProvisionStoppedCondition,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hivev1.ProvisionFailedCondition,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hivev1.ProvisionStoppedCondition,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "Last condition matches",
+			conditions: []hivev1.ClusterDeploymentCondition{
+				{
+					Type:   hivev1.ProvisionedCondition,
+					Status: corev1.ConditionTrue,
+				},
+				{
+					Type:   hivev1.RequirementsMetCondition,
+					Status: corev1.ConditionFalse,
+				},
+			},
+			conditionType:  hivev1.RequirementsMetCondition,
+			expectedFound:  true,
+			expectedStatus: corev1.ConditionFalse,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			result := findClusterDeploymentCondition(tc.conditions, tc.conditionType)
+
+			if tc.expectedFound {
+				g.Expect(result).ToNot(BeNil())
+				g.Expect(result.Type).To(Equal(tc.conditionType))
+				g.Expect(result.Status).To(Equal(tc.expectedStatus))
+			} else {
+				g.Expect(result).To(BeNil())
+			}
 		})
 	}
 }

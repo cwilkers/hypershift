@@ -122,6 +122,8 @@ github.com/openshift/api v0.0.0-20260304122341-cf5d8996109f h1:M8y0oBq/KRkuSNFlU
 github.com/openshift/api v0.0.0-20260304122341-cf5d8996109f/go.mod h1:d5uzF0YN2nQQFA0jIEWzzOZ+edmo6wzlGLvx5Fhz4uY=
 github.com/openshift/aws-karpenter-provider-aws v0.0.0-20260207025257-2e871ee4d207 h1:gLln7Mf87FFVV99cxf4Ai+LQohBopKIJ3OtXGz3Z2v4=
 github.com/openshift/aws-karpenter-provider-aws v0.0.0-20260207025257-2e871ee4d207/go.mod h1:5WmnsSvkafGWUg2MPFTew5z2TVD2+aK3VNlNFGOid3A=
+github.com/openshift/hive/apis v0.0.0-20260414220921-76f9a996844f h1:w2KEf7keQaodGCXktdJiIlLIw6ddUwsvmz8fwwQq7OA=
+github.com/openshift/hive/apis v0.0.0-20260414220921-76f9a996844f/go.mod h1:98U/kA+A9nenhu0mCqaxaKyYJ+C/YEZoAUkPYDT/m+c=
 github.com/openshift/kubernetes-sigs-karpenter v0.0.0-20260206012902-048debf98313 h1:9JOEcMJRXFcyRa5XMlLDVEiKn90M5JftfgoB6hC4V4g=
 github.com/openshift/kubernetes-sigs-karpenter v0.0.0-20260206012902-048debf98313/go.mod h1:neqRRLu6knyM5iLTWbxZxh8UsxrIvjE5CI14n2P2+A4=
 github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaRUnok+kx1WdO15EQc=

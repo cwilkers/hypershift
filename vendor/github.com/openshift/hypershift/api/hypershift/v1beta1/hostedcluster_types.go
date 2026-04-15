@@ -7,6 +7,7 @@ import (
 	"github.com/openshift/hypershift/api/util/ipnet"
 
 	configv1 "github.com/openshift/api/config/v1"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -2181,6 +2182,15 @@ type HostedClusterStatus struct {
 	// configuration contains the cluster configuration status of the HostedCluster
 	// +optional
 	Configuration *ConfigurationStatus `json:"configuration,omitempty"`
+
+	// clusterDeploymentConditions contains Hive ClusterDeployment-compatible conditions
+	// synthesized from the HostedCluster state. This provides a familiar interface for
+	// consumers like the siteconfig operator that expect ClusterDeployment conditions.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=4
+	ClusterDeploymentConditions []hivev1.ClusterDeploymentCondition `json:"clusterDeploymentConditions,omitempty"`
 
 	// lastSuccessfulEtcdBackupURL is the cloud storage URL of the most recent
 	// successful etcd backup snapshot. Persisted here because HCPEtcdBackup CRs

@@ -40468,6 +40468,20 @@ ConfigurationStatus
 </tr>
 <tr>
 <td>
+<code>clusterDeploymentConditions</code></br>
+<em>
+[]github.com/openshift/hive/apis/hive/v1.ClusterDeploymentCondition
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>clusterDeploymentConditions contains Hive ClusterDeployment-compatible conditions
+synthesized from the HostedCluster state. This provides a familiar interface for
+consumers like the siteconfig operator that expect ClusterDeployment conditions.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>lastSuccessfulEtcdBackupURL</code></br>
 <em>
 string

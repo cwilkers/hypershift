@@ -273,11 +273,25 @@ linters:
         path: hypershift/v1beta1/openstack.go
         text: 'integers: field NetworkMTU pointer should not use an int, int8 or int16. Use int32 or int64 depending on bounding requirements'
 
-      # maxlength (1 issue)
+      # maxlength (5 issues)
       - linters:
           - kubeapilinter
         path: hypershift/v1beta1/hostedcluster_types.go
         text: 'maxlength: field ClusterVersionStatus.History must have a maximum items, add kubebuilder:validation:MaxItems marker'
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'maxlength: field ClusterDeploymentCondition.Type type ClusterDeploymentConditionType must have a maximum length, add kubebuilder:validation:MaxLength marker'
+
+      # minlength (2 issues)
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'minlength: field HostedClusterStatus.ClusterDeploymentConditions must have a minimum items, add kubebuilder:validation:MinItems marker'
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'minlength: field ClusterDeploymentCondition.Type type ClusterDeploymentConditionType must have a minimum length, add kubebuilder:validation:MinLength marker'
 
       # nobools (11 issues)
       - linters:
@@ -347,7 +361,15 @@ linters:
         path: hypershift/v1beta1/hostedcluster_types.go
         text: 'nonullable: field ClusterVersionStatus.AvailableUpdates has forbidden marker "nullable"'
 
-      # optionalfields (138 issues)
+      # optionalfields (140 issues)
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'optionalfields: field ClusterDeploymentCondition.Reason has a valid zero value \(""\) and should be a pointer.'
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'optionalfields: field ClusterDeploymentCondition.Message has a valid zero value \(""\) and should be a pointer.'
       - linters:
           - kubeapilinter
         path: hypershift/v1beta1/aws.go
@@ -869,7 +891,19 @@ linters:
         path: hypershift/v1beta1/powervs.go
         text: 'optionalfields: field Zone should be a pointer'
 
-      # requiredfields (265 issues)
+      # requiredfields (268 issues)
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'requiredfields: field ClusterDeploymentCondition.Status should have the omitempty tag.'
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'requiredfields: field ClusterDeploymentCondition.Type should have the omitempty tag.'
+      - linters:
+          - kubeapilinter
+        path: hypershift/v1beta1/hostedcluster_types.go
+        text: 'requiredfields: field ClusterDeploymentCondition.Type has a valid zero value \(""\), but the validation is not complete \(e.g. minimum length\). The field should be a pointer to allow the zero value to be set. If the zero value is not a valid use case, complete the validation and remove the pointer.'
       - linters:
           - kubeapilinter
         path: hypershift/v1beta1/agent.go
