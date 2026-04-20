@@ -29,6 +29,7 @@ const (
 	// TODO Pin to specific release
 	imageCAPAgent         = "quay.io/edge-infrastructure/cluster-api-provider-agent:latest"
 	CredentialsRBACPrefix = "cluster-api-agent"
+	CAPIProviderRoleName  = "capi-provider-role"
 )
 
 type Agent struct{}
@@ -137,13 +138,33 @@ func (p Agent) ReconcileCredentials(ctx context.Context, c client.Client, create
 	hcluster *hyperv1.HostedCluster,
 	controlPlaneNamespace string) error {
 
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: hcluster.Spec.Platform.Agent.AgentNamespace,
+			Name:      CAPIProviderRoleName,
+		},
+	}
+	_, err := createOrUpdate(ctx, c, role, func() error {
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"agent-install.openshift.io"},
+				Resources: []string{"agents"},
+				Verbs:     []string{"*"},
+			},
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reconcile Agent Role: %w", err)
+	}
+
 	roleBinding := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: hcluster.Spec.Platform.Agent.AgentNamespace,
 			Name:      fmt.Sprintf("%s-%s", CredentialsRBACPrefix, controlPlaneNamespace),
 		},
 	}
-	_, err := createOrUpdate(ctx, c, roleBinding, func() error {
+	_, err = createOrUpdate(ctx, c, roleBinding, func() error {
 		roleBinding.Subjects = []rbacv1.Subject{
 			{
 				Kind:      "ServiceAccount",
@@ -154,7 +175,7 @@ func (p Agent) ReconcileCredentials(ctx context.Context, c client.Client, create
 		roleBinding.RoleRef = rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",
-			Name:     "capi-provider-role",
+			Name:     CAPIProviderRoleName,
 		}
 		return nil
 	})
@@ -207,8 +228,28 @@ func reconcileAgentCluster(agentCluster *agentv1.AgentCluster, ignEndpoint, cont
 func (Agent) DeleteCredentials(ctx context.Context, c client.Client,
 	hc *hyperv1.HostedCluster,
 	controlPlaneNamespace string) error {
-	if _, err := hyperutil.DeleteIfNeeded(ctx, c, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-%s", CredentialsRBACPrefix, controlPlaneNamespace), Namespace: hc.Spec.Platform.Agent.AgentNamespace}}); err != nil {
+	deletedBindingName := fmt.Sprintf("%s-%s", CredentialsRBACPrefix, controlPlaneNamespace)
+	if _, err := hyperutil.DeleteIfNeeded(ctx, c, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: deletedBindingName, Namespace: hc.Spec.Platform.Agent.AgentNamespace}}); err != nil {
 		return fmt.Errorf("failed to clean up CAPI provider rolebinding: %w", err)
+	}
+	roleBindings := &rbacv1.RoleBindingList{}
+	if err := c.List(ctx, roleBindings, client.InNamespace(hc.Spec.Platform.Agent.AgentNamespace)); err != nil {
+		return fmt.Errorf("failed to list rolebindings in agent namespace: %w", err)
+	}
+	for i := range roleBindings.Items {
+		rb := &roleBindings.Items[i]
+		if rb.Name == deletedBindingName {
+			continue
+		}
+		if rb.DeletionTimestamp != nil {
+			continue
+		}
+		if rb.RoleRef.APIGroup == "rbac.authorization.k8s.io" && rb.RoleRef.Kind == "Role" && rb.RoleRef.Name == CAPIProviderRoleName {
+			return nil
+		}
+	}
+	if _, err := hyperutil.DeleteIfNeeded(ctx, c, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: CAPIProviderRoleName, Namespace: hc.Spec.Platform.Agent.AgentNamespace}}); err != nil {
+		return fmt.Errorf("failed to clean up CAPI provider role: %w", err)
 	}
 	return nil
 }

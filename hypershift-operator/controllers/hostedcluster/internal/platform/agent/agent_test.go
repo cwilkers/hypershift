@@ -57,6 +57,97 @@ func TestReconcileCredentials(t *testing.T) {
 	g.Expect(roleBinding.Subjects[0].Namespace).To(BeIdenticalTo(controlPlaneNamespace))
 	g.Expect(roleBinding.Subjects[0].Kind).To(BeIdenticalTo("ServiceAccount"))
 	g.Expect(roleBinding.Subjects[0].Name).To(BeIdenticalTo("capi-provider"))
+
+	role := &rbacv1.Role{}
+	err = client.Get(t.Context(), types.NamespacedName{
+		Namespace: hostedCluster.Spec.Platform.Agent.AgentNamespace,
+		Name:      CAPIProviderRoleName,
+	}, role)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(role.Rules).To(HaveLen(1))
+	g.Expect(role.Rules[0].APIGroups).To(Equal([]string{"agent-install.openshift.io"}))
+	g.Expect(role.Rules[0].Resources).To(Equal([]string{"agents"}))
+	g.Expect(role.Rules[0].Verbs).To(Equal([]string{"*"}))
+}
+
+func TestReconcileCredentials_WhenCalledMultipleTimes_ItShouldBeIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	platform := &Agent{}
+	hostedCluster := &hyperv1.HostedCluster{
+		Spec: hyperv1.HostedClusterSpec{
+			Platform: hyperv1.PlatformSpec{
+				Type: hyperv1.AgentPlatform,
+				Agent: &hyperv1.AgentPlatformSpec{
+					AgentNamespace: "test",
+				},
+			},
+		},
+	}
+	controlPlaneNamespace := "test"
+	client := fake.NewClientBuilder().Build()
+
+	err := platform.ReconcileCredentials(t.Context(),
+		client, upsert.New(false).CreateOrUpdate,
+		hostedCluster, controlPlaneNamespace)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	err = platform.ReconcileCredentials(t.Context(),
+		client, upsert.New(false).CreateOrUpdate,
+		hostedCluster, controlPlaneNamespace)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	role := &rbacv1.Role{}
+	err = client.Get(t.Context(), types.NamespacedName{
+		Namespace: hostedCluster.Spec.Platform.Agent.AgentNamespace,
+		Name:      CAPIProviderRoleName,
+	}, role)
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(role.Rules).To(HaveLen(1))
+}
+
+func TestDeleteCredentialsPreservesSharedRole(t *testing.T) {
+	g := NewGomegaWithT(t)
+	platform := &Agent{}
+	agentNamespace := "shared-agent-ns"
+	hostedCluster1 := &hyperv1.HostedCluster{
+		Spec: hyperv1.HostedClusterSpec{
+			Platform: hyperv1.PlatformSpec{
+				Type:  hyperv1.AgentPlatform,
+				Agent: &hyperv1.AgentPlatformSpec{AgentNamespace: agentNamespace},
+			},
+		},
+	}
+	hostedCluster2 := &hyperv1.HostedCluster{
+		Spec: hyperv1.HostedClusterSpec{
+			Platform: hyperv1.PlatformSpec{
+				Type:  hyperv1.AgentPlatform,
+				Agent: &hyperv1.AgentPlatformSpec{AgentNamespace: agentNamespace},
+			},
+		},
+	}
+	cpNamespace1 := "cp-one"
+	cpNamespace2 := "cp-two"
+	c := fake.NewClientBuilder().Build()
+
+	err := platform.ReconcileCredentials(t.Context(), c, upsert.New(false).CreateOrUpdate, hostedCluster1, cpNamespace1)
+	g.Expect(err).ToNot(HaveOccurred())
+	err = platform.ReconcileCredentials(t.Context(), c, upsert.New(false).CreateOrUpdate, hostedCluster2, cpNamespace2)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	err = platform.DeleteCredentials(t.Context(), c, hostedCluster1, cpNamespace1)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	// When another HostedCluster still references the Role, it should be preserved
+	role := &rbacv1.Role{}
+	err = c.Get(t.Context(), types.NamespacedName{Namespace: agentNamespace, Name: CAPIProviderRoleName}, role)
+	g.Expect(err).ToNot(HaveOccurred(), "shared Role should not be deleted while another RoleBinding references it")
+
+	// When the last HostedCluster is deleted, the Role should be cleaned up
+	err = platform.DeleteCredentials(t.Context(), c, hostedCluster2, cpNamespace2)
+	g.Expect(err).ToNot(HaveOccurred())
+
+	err = c.Get(t.Context(), types.NamespacedName{Namespace: agentNamespace, Name: CAPIProviderRoleName}, role)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "shared Role should be deleted when no RoleBindings reference it")
 }
 
 func TestDeleteCredentials(t *testing.T) {
@@ -95,6 +186,14 @@ func TestDeleteCredentials(t *testing.T) {
 	}, roleBinding)
 	g.Expect(err).ToNot(HaveOccurred())
 
+	// Verify the role exists
+	role := &rbacv1.Role{}
+	err = client.Get(t.Context(), types.NamespacedName{
+		Namespace: hostedCluster.Spec.Platform.Agent.AgentNamespace,
+		Name:      CAPIProviderRoleName,
+	}, role)
+	g.Expect(err).ToNot(HaveOccurred())
+
 	err = platform.DeleteCredentials(t.Context(),
 		client,
 		hostedCluster, controlPlaneNamespace)
@@ -105,6 +204,13 @@ func TestDeleteCredentials(t *testing.T) {
 		Namespace: hostedCluster.Spec.Platform.Agent.AgentNamespace,
 		Name:      fmt.Sprintf("%s-%s", CredentialsRBACPrefix, controlPlaneNamespace),
 	}, roleBinding)
+	g.Expect(apierrors.IsNotFound(err)).To(Equal(true))
+
+	role = &rbacv1.Role{}
+	err = client.Get(t.Context(), types.NamespacedName{
+		Namespace: hostedCluster.Spec.Platform.Agent.AgentNamespace,
+		Name:      CAPIProviderRoleName,
+	}, role)
 	g.Expect(apierrors.IsNotFound(err)).To(Equal(true))
 }
 
